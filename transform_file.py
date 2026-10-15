@@ -29,7 +29,7 @@ def newLogger(logName: str = "applog"):
     fh = logging.handlers.TimedRotatingFileHandler(logPath, when='midnight', interval=1, backupCount=7, encoding='utf-8')
     fh.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG)
+    ch.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
     ch.setFormatter(formatter)
@@ -147,10 +147,12 @@ def typeLoadCurve(selectedFile: pathlib.Path) -> tuple[list[list[str]], str]:
 
         # estrae la riga con le unità misurate
         measured = righe.pop(6)
+        # rimuovo una riga inutile per allinearle il numero di righe inziali a quello degli altri file
+        righe.pop(4) 
         # rinomina la prima colonna in 'data'
         measured[0] = "data"
         # inserisce la nuova riga di intestazione modificata
-        righe.insert(9, measured)
+        righe.insert(8, measured)
 
         logger.debug("L'ordine delle righe di intestazione è stato modificato")
 
@@ -231,44 +233,51 @@ if __name__ == "__main__":
     start = datetime.now()
     logger = newLogger("gallazzi-csv-converter")
     logger.info("Script avviato")
+    try:
+        load_dotenv()
+        logger.debug("Trovato file '.env'")
 
-    load_dotenv()
-    logger.debug("Trovato file '.env'")
-
-    WEBVIEW_EXPORT_PATH = os.getenv("WEBVIEW_EXPORT_PATH")
-    if not WEBVIEW_EXPORT_PATH:
-        raise ValueError(f"La variabile {WEBVIEW_EXPORT_PATH} non e' impostata")
-    
-    WEBVIEW_EXPORT_PATH = pathlib.Path(WEBVIEW_EXPORT_PATH)
-
-    EXPORT_TEMP_DIR = os.getenv("EXPORT_TEMP_DIR", pathlib.Path.cwd())
-    EXPORT_TEMP_DIR = pathlib.Path(EXPORT_TEMP_DIR)
+        WEBVIEW_EXPORT_PATH = os.getenv("WEBVIEW_EXPORT_PATH")
+        if not WEBVIEW_EXPORT_PATH:
+            raise ValueError(f"La variabile {WEBVIEW_EXPORT_PATH} non e' impostata")
         
-    EXPORT_MAXROWS = int(os.getenv("EXPORT_MAXROWS", 300))
+        WEBVIEW_EXPORT_PATH = pathlib.Path(WEBVIEW_EXPORT_PATH) 
 
-    # crea cartella in cui salvare temporaneamente i file
-    #pathlib.Path.mkdir(EXPORT_TEMP_DIR / "export_temp", parents=True, exist_ok=True)
-    logger.info("Variabili importate correttamente dal file '.env'")
+        # legge la cartella di esportazione dei file.
+        # se non è scritta nel file, considera la cartella di lettura e genera un sottocartella /export
+        EXPORT_TEMP_DIR = os.getenv("EXPORT_TEMP_DIR", WEBVIEW_EXPORT_PATH / "export")
+        EXPORT_TEMP_DIR = pathlib.Path(EXPORT_TEMP_DIR)
+        EXPORT_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+            
+        EXPORT_MAXROWS = int(os.getenv("EXPORT_MAXROWS", 300))
 
-    # lista dei file presenti nella cartella
-    csvFileList = pathlib.Path(WEBVIEW_EXPORT_PATH).glob("*.csv", case_sensitive=False)
-    # logger.info("Nella cartella '%s' sono presenti %d file", WEBVIEW_EXPORT_PATH.name, sum(1 for _ in csvFileList))
+        # crea cartella in cui salvare temporaneamente i file
+        #pathlib.Path.mkdir(EXPORT_TEMP_DIR / "export_temp", parents=True, exist_ok=True)
+        logger.info("Variabili importate correttamente dal file '.env'")
 
-    for f in csvFileList:
-        logger.debug("File '%s'", f.name)
+        # lista dei file presenti nella cartella
+        csvFileList = pathlib.Path(WEBVIEW_EXPORT_PATH).glob("*.csv", case_sensitive=False)
+        # logger.info("Nella cartella '%s' sono presenti %d file", WEBVIEW_EXPORT_PATH.name, sum(1 for _ in csvFileList))
 
-        try:
-            edited, loadName = workOnFile(f)
-            logger.debug("%s", edited[:10] if edited else "File vuoto")
-        except Exception:
-            continue
+        for f in csvFileList:
+            logger.debug("Considero il file '%s'", f.name)
 
-        # il file può essere vuoto
-        if not edited: continue
+            try:
+                edited, loadName = workOnFile(f)
+                logger.debug("%s", edited[:10] if edited else "File vuoto")
+            except Exception as e:
+                logger.exception(e)
+                continue
 
-        fileChunks = splitLongFile(edited, EXPORT_MAXROWS)
-        logger.info("Il file è stato diviso in %d parti", len(fileChunks))
+            # il file può essere vuoto
+            if not edited: continue
 
-        writeFilesOnDisk(fileChunks, f.stem, loadName, EXPORT_TEMP_DIR)
+            fileChunks = splitLongFile(edited, EXPORT_MAXROWS)
+            logger.info("Il file è stato diviso in %d parti", len(fileChunks))
+
+            writeFilesOnDisk(fileChunks, f.stem, loadName, EXPORT_TEMP_DIR)
+    
+    except Exception as ex:
+        logger.exception(ex)
 
     logger.info("Script terminato in %s", datetime.now()-start)
