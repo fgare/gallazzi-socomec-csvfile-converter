@@ -1,7 +1,7 @@
 import pathlib
 import re
 import csv
-from datetime import datetime, timedelta
+from datetime import datetime
 import io
 from dotenv import load_dotenv
 import os
@@ -14,18 +14,20 @@ Operazioni:
 - per ciascun file determinare il tipo di dati contenuti
 - modificare ordine righe
 - spaccare in file di MAX numero di righe
-- scrivere i nuovi file su un buffer
-- inviare via FTP
+- scrivere i nuovi file in una cartella temporanea (creata precedentemente)
 '''
 
 logger: logging.Logger
 
 
-def newLogger():
-    logger = logging.getLogger("convertitore-file-webview")
+def newLogger(logName: str = "applog"):
+    logger = logging.getLogger(logName)
     logger.setLevel(logging.DEBUG)
-    fh = logging.handlers.TimedRotatingFileHandler("gallazzi.log", when='midnight', interval=1, backupCount=7, encoding='utf-8')
-    fh.setLevel(logging.INFO)
+    logPath = pathlib.Path().joinpath("log")
+    logPath.mkdir(parents=True, exist_ok=True)
+    logPath = logPath.joinpath(logName).with_suffix(".log")
+    fh = logging.handlers.TimedRotatingFileHandler(logPath, when='midnight', interval=1, backupCount=7, encoding='utf-8')
+    fh.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -43,17 +45,18 @@ def workOnFile(filepath: pathlib.Path):
 def getFilenameDictInfo(file: pathlib.Path | str):
     file = pathlib.Path(file) # nel caso l'argomento fosse str
     filename = file.name
+    logger.debug("Nome del file ricevuto in input: '%s'", filename)
 
     namePattern = re.compile(
-        r"^(?P<dispositivo>.+?)_"
-        r"(?P<tipo>LoadCurve|avg|index)_"
+        r"^(?P<dispositivo>.+)_"
+        r"(?P<tipo>LoadCurve|Avg|index)_"
         r"(?P<data>\d{4}-\d{2}-\d{2})_"
-        r"(?P<ora>\d{2}-\d{2}-\d{2})"
-        r"\.csv$",
+        r"(?P<ora>\d{2}-\d{2}-\d{2})",
         re.IGNORECASE
     )
 
     nameMatch = namePattern.match(filename)
+    logger.debug("Risultato del match sulla regex: %s", True if nameMatch is True else None)
 
     if nameMatch: 
         infoDict = nameMatch.groupdict()
@@ -65,7 +68,7 @@ def getFilenameDictInfo(file: pathlib.Path | str):
 
 def selectFileGroup(inputFile: pathlib.Path):
     tipo = getFilenameDictInfo(inputFile)['tipo']
-    tipo = str(tipo).lower
+    tipo = str(tipo).lower()
     logger.debug("Tipo di file riconosciuto: %s", tipo)
 
     match tipo:
@@ -81,14 +84,18 @@ def selectFileGroup(inputFile: pathlib.Path):
 Genera il nuovo nome per il file, inserendo l'indice se specificato.
 Il nuovo nome viene formato secondo il seguente schema: <nome dispositivo>_<indice>_<dataora>
 '''
-def newFileName(old: dict, index: int = 0):
+def newFileName(old: dict, loadName: str, index: int = 0) -> str:
     dataora = old['data'] + " " + old['ora']
     dataora = datetime.strptime(dataora, "%Y-%m-%d %H-%M-%S")
 
-    if index:
-        return old['dispositivo'] + "_" + index + "_" + dataora.strftime("%Y%m%d%H%M%S")
+    name = str()
 
-    return old['dispositivo'] + "_" + dataora.strftime("%Y%m%d%H%M%S")
+    if loadName: name += loadName
+    else: name += old['dispositivo']
+
+    if index: name += "_" + str(index)
+    
+    return name + old['tipo'].upper() + "_" + dataora.strftime("%Y%m%d%H%M%S")
 
 
 '''
@@ -107,7 +114,7 @@ def splitLongFile(righe: list[list[str]], MAX: int):
 
     for i in range(0,blocks_n):
         strBuffer = io.StringIO()
-        writer = csv.writer(strBuffer)
+        writer = csv.writer(strBuffer, lineterminator='\n')
 
         start = i * MAX
         end = i * MAX + MAX
@@ -118,17 +125,28 @@ def splitLongFile(righe: list[list[str]], MAX: int):
         chunksList.append(strBuffer)
 
     return chunksList
-        
+
+
+def findRowStart(righe: list[list[str]], searchString: str) -> tuple[int, list[str]]:
+    for id, row in enumerate(righe):
+        if row and row[0].strip().lower() == searchString.strip().lower():
+            return id, row
+
+    raise ValueError("Riga 'Load name' non trovata all'interno del file")
+
 
 def typeLoadCurve():
     pass
 
 
-def typeAvg(selectedFile: pathlib.Path):
+def typeAvg(selectedFile: pathlib.Path) -> tuple[list[list[str]], str]:
     logger.debug("Il file viene gestito come tipo AVG")
 
-    with open (selectedFile, 'r') as currentFile:
-        reader = csv.reader(currentFile, delimiter=',',quotechar='\"')
+    # Usando utf-8-sig rimuove il BOM iniziale invisibile
+    with open (selectedFile, mode='r', encoding='utf-8-sig') as currentFile:
+        logger.debug("Apro il file '%s' in lettura", selectedFile.name)
+
+        reader = csv.reader(currentFile, delimiter=',', quotechar='\"')
         righe = list(reader)
 
         # estrae la riga con le unità misurate
@@ -139,26 +157,36 @@ def typeAvg(selectedFile: pathlib.Path):
         righe.insert(8, measured)
 
         logger.debug("L'ordine delle righe di intestazione è stato modificato")
-        return righe
+
+        (_, loadName) = findRowStart(righe, "load name")
+
+        # in load name considero l'elemento 1 in quanto è il primo a contenere il nome del carico.
+        # L'elemento 0 contiene la dicitura LoadName
+        return righe, loadName[1]
 
 
 def typeIndex():
     pass
 
 
-def writeFilesOnDisk(chunks: list, originalName: str, exportPath: pathlib.Path):
-    for idx, c in enumerate(chunks):
-        newName = newFileName(getFilenameDictInfo(originalName), idx)
-        newPath = exportPath.joinpath(newName).with_suffix(".csv")
+def writeFilesOnDisk(chunks: list, originalName: str, loadName: str, exportPath: pathlib.Path):
+    logger.debug("Inizio scrittura di %d file", len(chunks))
 
-        with open(newPath, mode='w', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile, delimiter=';')
-            writer.writerows(c)
+    for idx, c in enumerate(chunks):
+        newName = newFileName(getFilenameDictInfo(originalName), loadName, idx)
+        newPath = exportPath.joinpath(newName).with_suffix(".csv")
+        logger.debug("Il nuovo file sarà nominato '%s'", newPath.name)
+
+        with open(newPath, mode='w', encoding='utf-8', newline='') as f:
+            f.write(c.getvalue())
+
+        logger.info("Scritto su disco il file '%s'", newPath.name)
 
 
 if __name__ == "__main__":
     start = datetime.now()
-    logger = newLogger()
+    logger = newLogger("gallazzi-csv-converter")
+    logger.info("Script avviato")
 
     load_dotenv()
     logger.debug("Trovato file '.env'")
@@ -175,7 +203,7 @@ if __name__ == "__main__":
     EXPORT_MAXROWS = int(os.getenv("EXPORT_MAXROWS", 300))
 
     # crea cartella in cui salvare temporaneamente i file
-    pathlib.Path.mkdir(EXPORT_TEMP_DIR / "export_temp", parents=True, exist_ok=True)
+    #pathlib.Path.mkdir(EXPORT_TEMP_DIR / "export_temp", parents=True, exist_ok=True)
     logger.debug("Variabili importate correttamente da '.env'")
 
     # lista dei file presenti nella cartella
@@ -186,7 +214,8 @@ if __name__ == "__main__":
         logger.debug("File '%s'", f.name)
 
         try:
-            edited = workOnFile(f)
+            edited, loadName = workOnFile(f)
+            logger.debug("%s", edited[:10] if edited else "File vuoto")
         except Exception:
             continue
 
@@ -196,6 +225,6 @@ if __name__ == "__main__":
         fileChunks = splitLongFile(edited, EXPORT_MAXROWS)
         logger.info("Il file è stato diviso in %d parti", len(fileChunks))
 
-        writeFilesOnDisk(fileChunks, f.stem, EXPORT_TEMP_DIR)
+        writeFilesOnDisk(fileChunks, f.stem, loadName, EXPORT_TEMP_DIR)
 
     logger.info("Script terminato in %s", datetime.now()-start)
