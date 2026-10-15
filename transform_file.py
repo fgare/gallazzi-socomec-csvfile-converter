@@ -73,11 +73,11 @@ def selectFileGroup(inputFile: pathlib.Path):
 
     match tipo:
         case "loadcurve":
-            pass
+            return typeLoadCurve(inputFile)
         case "avg":
             return typeAvg(inputFile)
         case "index":
-            pass
+            return typeIndex(inputFile)
 
 
 '''
@@ -95,7 +95,7 @@ def newFileName(old: dict, loadName: str, index: int = 0) -> str:
 
     if index: name += "_" + str(index)
     
-    return name + old['tipo'].upper() + "_" + dataora.strftime("%Y%m%d%H%M%S")
+    return name + "_" + old['tipo'].upper() + "_" + dataora.strftime("%Y%m%d%H%M%S")
 
 
 '''
@@ -135,8 +135,30 @@ def findRowStart(righe: list[list[str]], searchString: str) -> tuple[int, list[s
     raise ValueError("Riga 'Load name' non trovata all'interno del file")
 
 
-def typeLoadCurve():
-    pass
+def typeLoadCurve(selectedFile: pathlib.Path) -> tuple[list[list[str]], str]:
+    logger.debug("Il file viene gestito come tipo LOAD CURVE")
+
+    # Usando utf-8-sig rimuove il BOM iniziale invisibile
+    with open (selectedFile, mode='r', encoding='utf-8-sig') as currentFile:
+        logger.debug("Apro il file '%s' in lettura", selectedFile.name)
+
+        reader = csv.reader(currentFile, delimiter=',', quotechar='\"')
+        righe = list(reader)
+
+        # estrae la riga con le unità misurate
+        measured = righe.pop(6)
+        # rinomina la prima colonna in 'data'
+        measured[0] = "data"
+        # inserisce la nuova riga di intestazione modificata
+        righe.insert(9, measured)
+
+        logger.debug("L'ordine delle righe di intestazione è stato modificato")
+
+        (_, loadName) = findRowStart(righe, "load name")
+
+        # in load name considero l'elemento 1 in quanto è il primo a contenere il nome del carico.
+        # L'elemento 0 contiene la dicitura LoadName
+        return righe, loadName[1]
 
 
 def typeAvg(selectedFile: pathlib.Path) -> tuple[list[list[str]], str]:
@@ -165,8 +187,30 @@ def typeAvg(selectedFile: pathlib.Path) -> tuple[list[list[str]], str]:
         return righe, loadName[1]
 
 
-def typeIndex():
-    pass
+def typeIndex(selectedFile: pathlib.Path) -> tuple[list[list[str]], str]:
+    logger.debug("Il file viene gestito come tipo INDEX")
+    
+    # Usando utf-8-sig rimuove il BOM iniziale invisibile
+    with open (selectedFile, mode='r', encoding='utf-8-sig') as currentFile:
+        logger.debug("Apro il file '%s' in lettura", selectedFile.name)
+
+        reader = csv.reader(currentFile, delimiter=',', quotechar='\"')
+        righe = list(reader)
+
+        # estrae la riga con le unità misurate
+        measured = righe.pop(6)
+        # rinomina la prima colonna in 'data'
+        measured[0] = "data"
+        # inserisce la nuova riga di intestazione modificata
+        righe.insert(8, measured)
+
+        logger.debug("L'ordine delle righe di intestazione è stato modificato")
+
+        (_, loadName) = findRowStart(righe, "load name")
+
+        # in load name considero l'elemento 1 in quanto è il primo a contenere il nome del carico.
+        # L'elemento 0 contiene la dicitura LoadName
+        return righe, loadName[1]
 
 
 def writeFilesOnDisk(chunks: list, originalName: str, loadName: str, exportPath: pathlib.Path):
@@ -204,7 +248,7 @@ if __name__ == "__main__":
 
     # crea cartella in cui salvare temporaneamente i file
     #pathlib.Path.mkdir(EXPORT_TEMP_DIR / "export_temp", parents=True, exist_ok=True)
-    logger.debug("Variabili importate correttamente da '.env'")
+    logger.info("Variabili importate correttamente dal file '.env'")
 
     # lista dei file presenti nella cartella
     csvFileList = pathlib.Path(WEBVIEW_EXPORT_PATH).glob("*.csv", case_sensitive=False)
